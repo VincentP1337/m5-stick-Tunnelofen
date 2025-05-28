@@ -135,24 +135,31 @@ void loop() {
   if (now - lastVibrationCheck >= 3000) {
     lastVibrationCheck = now;
 
+    unsigned long vibStart = millis();
     if (lastVibrationMsg == "green") {
-      digitalWrite(VIB_PIN, HIGH);
-      delay(100);
-      digitalWrite(VIB_PIN, LOW);
+        // Sanfte Vibration (kurze Pulse, lange Pausen)
+        while (millis() - vibStart < 3000) {
+            digitalWrite(VIB_PIN, HIGH);
+            delay(30);
+            digitalWrite(VIB_PIN, LOW);
+            delay(120);
+        }
     } else if (lastVibrationMsg == "yellow") {
-      for (int i = 0; i < 2; i++) {
-        digitalWrite(VIB_PIN, HIGH);
-        delay(100);
-        digitalWrite(VIB_PIN, LOW);
-        delay(100);
-      }
+        // Mittlere Vibration (mittlere Pulse und Pausen)
+        while (millis() - vibStart < 3000) {
+            digitalWrite(VIB_PIN, HIGH);
+            delay(80);
+            digitalWrite(VIB_PIN, LOW);
+            delay(80);
+        }
     } else if (lastVibrationMsg == "red") {
-      for (int i = 0; i < 3; i++) {
-        digitalWrite(VIB_PIN, HIGH);
-        delay(70);
-        digitalWrite(VIB_PIN, LOW);
-        delay(70);
-      }
+        // Starke Vibration (lange Pulse, kurze Pausen)
+        while (millis() - vibStart < 3000) {
+            digitalWrite(VIB_PIN, HIGH);
+            delay(150);
+            digitalWrite(VIB_PIN, LOW);
+            delay(30);
+        }
     }
   }
 
