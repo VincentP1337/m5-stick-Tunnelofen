@@ -14,8 +14,19 @@ PubSubClient mqttClient(wifiClient);
 volatile bool mqttMessageReceived = false;
 String lastTemperature = "-";
 String lastVibrationMsg = "-";
+String lastGeofenceStatus = "OUT"; // Status für Geofencing (IN/OUT)
+String lastGeofenceRaw = "-"; // Rohe MQTT-Nachricht für Debug
+String lastAreaId = "-"; // Area ID für Debug
 
 #define VIB_PIN 26
+
+// Vibrations-State-Machine Variablen
+bool vibrationActive = false;
+unsigned long vibrationStartTime = 0;
+unsigned long lastVibrationToggle = 0;
+bool vibrationMotorOn = false;
+String currentVibrationLevel = "";
+int vibrationPhase = 0; // 0 = Hauptvibration, 1 = Kurze Pulse
 
 // Callback für empfangene MQTT-Nachrichten
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -23,8 +34,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
   String message;
   for (unsigned int i = 0; i < length; i++) {
     message += (char)payload[i];
-  }
-  if (String(topic) == "tunnelofen/data") {
+  }  if (String(topic) == "tunnelofen/data") {
     // JSON parsen und currentTemp extrahieren
     StaticJsonDocument<128> doc;
     DeserializationError error = deserializeJson(doc, message);
@@ -34,7 +44,18 @@ void callback(char* topic, byte* payload, unsigned int length) {
       lastTemperature = "-";
     }
   } else if (String(topic) == "m5stick/vibration") {
-    lastVibrationMsg = message;
+    lastVibrationMsg = message;  } else if (String(topic) == "zigpos/geofence") {
+    lastGeofenceRaw = message; // Rohe Nachricht für Debug speichern
+    // JSON parsen für Geofencing
+    StaticJsonDocument<256> geoDoc;
+    DeserializationError geoError = deserializeJson(geoDoc, message);
+    if (!geoError) {
+      // Area ID für Debug speichern
+      lastAreaId = geoDoc["areaId"].as<String>();
+      
+      // Alle Geofence-Events verarbeiten (nicht nur Elena Stoll)
+      lastGeofenceStatus = geoDoc["eventType"].as<String>(); // "IN" oder "OUT"
+    }
   }
 }
 
@@ -78,12 +99,12 @@ void loop() {
 
   // WiFi Status prüfen
   bool wifiConnected = WiFi.status() == WL_CONNECTED;
-
   // MQTT Status prüfen und verbinden falls nötig
   if (!mqttClient.connected() && wifiConnected) {
     if (mqttClient.connect("M5StickCClient")) {
       mqttClient.subscribe("tunnelofen/data");
       mqttClient.subscribe("m5stick/vibration");
+      mqttClient.subscribe("zigpos/geofence");
     }
   }
   mqttClient.loop();
@@ -112,14 +133,18 @@ void loop() {
 
     M5.Display.setTextColor(WHITE, BLACK);
     float tempValue = lastTemperature.toFloat();
-    M5.Display.printf("Temp: %.1f\n", tempValue);
-
-    // Vibration-Topic anzeigen
+    M5.Display.printf("Temp: %.1f\n", tempValue);    // Vibration-Topic anzeigen
     M5.Display.setTextColor(CYAN, BLACK);
     M5.Display.printf("Vibration: %s\n", lastVibrationMsg.c_str());
 
-    M5.Display.setTextColor(YELLOW, BLACK);
+    // Geofencing-Status anzeigen
+    M5.Display.setTextColor(lastGeofenceStatus == "IN" ? RED : GREEN, BLACK);
+    M5.Display.printf("Geofence: %s\n", lastGeofenceStatus == "IN" ? "GEFAHR!" : "SICHER");    M5.Display.setTextColor(YELLOW, BLACK);
     M5.Display.printf("Batterie: %d %%\n", batPercent);
+
+    // Debug: Geofence-Status anzeigen
+    M5.Display.setTextColor(ORANGE, BLACK);
+    M5.Display.printf("Debug: %s\n", lastGeofenceStatus.c_str());
 
     lastDisplayTemp = lastTemperature;
     lastBatPercent = batPercent;
@@ -127,64 +152,127 @@ void loop() {
     lastMqtt = mqttClient.connected();
     mqttMessageReceived = false;
   }
-
   static unsigned long lastVibrationCheck = 0;
   unsigned long now = millis();
-
-  // Alle 3 Sekunden Vibration prüfen und ggf. auslösen
+  
+  // Alle 3 Sekunden prüfen ob neue Vibration gestartet werden soll
   if (now - lastVibrationCheck >= 3000) {
     lastVibrationCheck = now;
 
-    // 3 Sekunden "Dauer"-Vibration mit unterschiedlicher Intensität
-    unsigned long vibStart = millis();
-    if (lastVibrationMsg == "green") {
-      // Sanft: kurze Pulse, lange Pausen
-      while (millis() - vibStart < 3000) {
-        digitalWrite(VIB_PIN, HIGH);
-        delay(30);
-        digitalWrite(VIB_PIN, LOW);
-        delay(120);
-      }
-      // Danach: 1x kurz
-      digitalWrite(VIB_PIN, HIGH); delay(100); digitalWrite(VIB_PIN, LOW); delay(100);
-    } else if (lastVibrationMsg == "yellow") {
-      // Mittel: mittlere Pulse/Pausen
-      while (millis() - vibStart < 3000) {
-        digitalWrite(VIB_PIN, HIGH);
-        delay(80);
-        digitalWrite(VIB_PIN, LOW);
-        delay(80);
-      }
-      // Danach: 2x kurz
-      for (int i = 0; i < 2; i++) {
-        digitalWrite(VIB_PIN, HIGH); delay(100); digitalWrite(VIB_PIN, LOW); delay(100);
-      }
-    } else if (lastVibrationMsg == "red") {
-      // Stark: lange Pulse, kurze Pausen
-      while (millis() - vibStart < 3000) {
-        digitalWrite(VIB_PIN, HIGH);
-        delay(150);
-        digitalWrite(VIB_PIN, LOW);
-        delay(30);
-      }
-      // Danach: 3x kurz
-      for (int i = 0; i < 3; i++) {
-        digitalWrite(VIB_PIN, HIGH); delay(100); digitalWrite(VIB_PIN, LOW); delay(100);
-      }
+    // Nur vibrieren wenn Geofencing-Status "IN" ist und Vibrationsmodus aktiv
+    if (lastGeofenceStatus == "IN" && (lastVibrationMsg == "green" || lastVibrationMsg == "yellow" || lastVibrationMsg == "red")) {
+      // Neue Vibration starten
+      vibrationActive = true;
+      vibrationStartTime = now;
+      lastVibrationToggle = now;
+      vibrationMotorOn = false;
+      currentVibrationLevel = lastVibrationMsg;
+      vibrationPhase = 0; // Hauptvibration starten
     }
   }
 
-  // Knopf A prüfen und 5-fach vibrieren
+  // Vibrations-State-Machine (non-blocking)
+  if (vibrationActive) {
+    unsigned long vibElapsed = now - vibrationStartTime;
+    unsigned long toggleElapsed = now - lastVibrationToggle;
+    
+    if (vibrationPhase == 0) { // Hauptvibration (3 Sekunden)
+      if (vibElapsed < 3000) {
+        // Verschiedene Vibrationsmuster je nach Level
+        if (currentVibrationLevel == "green") {
+          // Sanft: 30ms an, 120ms aus
+          if (!vibrationMotorOn && toggleElapsed >= 120) {
+            digitalWrite(VIB_PIN, HIGH);
+            vibrationMotorOn = true;
+            lastVibrationToggle = now;
+          } else if (vibrationMotorOn && toggleElapsed >= 30) {
+            digitalWrite(VIB_PIN, LOW);
+            vibrationMotorOn = false;
+            lastVibrationToggle = now;
+          }
+        } else if (currentVibrationLevel == "yellow") {
+          // Mittel: 80ms an, 80ms aus
+          if (!vibrationMotorOn && toggleElapsed >= 80) {
+            digitalWrite(VIB_PIN, HIGH);
+            vibrationMotorOn = true;
+            lastVibrationToggle = now;
+          } else if (vibrationMotorOn && toggleElapsed >= 80) {
+            digitalWrite(VIB_PIN, LOW);
+            vibrationMotorOn = false;
+            lastVibrationToggle = now;
+          }
+        } else if (currentVibrationLevel == "red") {
+          // Stark: 150ms an, 30ms aus
+          if (!vibrationMotorOn && toggleElapsed >= 30) {
+            digitalWrite(VIB_PIN, HIGH);
+            vibrationMotorOn = true;
+            lastVibrationToggle = now;
+          } else if (vibrationMotorOn && toggleElapsed >= 150) {
+            digitalWrite(VIB_PIN, LOW);
+            vibrationMotorOn = false;
+            lastVibrationToggle = now;
+          }
+        }
+      } else {
+        // Hauptvibration beendet, zu kurzen Pulsen wechseln
+        digitalWrite(VIB_PIN, LOW);
+        vibrationMotorOn = false;
+        vibrationPhase = 1;
+        vibrationStartTime = now; // Neue Startzeit für Pulse
+        lastVibrationToggle = now;
+      }
+    } else if (vibrationPhase == 1) { // Kurze Pulse
+      int pulseCount = (currentVibrationLevel == "green") ? 1 : 
+                      (currentVibrationLevel == "yellow") ? 2 : 3;
+      int currentPulse = (int)(vibElapsed / 200); // Jeder Pulse dauert 200ms (100ms an + 100ms aus)
+      
+      if (currentPulse < pulseCount) {
+        int pulsePhase = (int)(vibElapsed % 200);
+        if (pulsePhase < 100 && !vibrationMotorOn) {
+          digitalWrite(VIB_PIN, HIGH);
+          vibrationMotorOn = true;
+        } else if (pulsePhase >= 100 && vibrationMotorOn) {
+          digitalWrite(VIB_PIN, LOW);
+          vibrationMotorOn = false;
+        }
+      } else {
+        // Alle Pulse beendet
+        digitalWrite(VIB_PIN, LOW);
+        vibrationActive = false;
+        vibrationMotorOn = false;
+      }
+    }
+  }
+  // Knopf A prüfen und 5-fach vibrieren (non-blocking)
   M5.update(); // Buttons aktualisieren
-  if (M5.BtnA.wasPressed()) {
-    for (int i = 0; i < 5; i++) {
-      digitalWrite(VIB_PIN, HIGH);
-      delay(100);
+  static bool buttonTestActive = false;
+  static unsigned long buttonTestStart = 0;
+  static int buttonTestPulse = 0;
+  
+  if (M5.BtnA.wasPressed() && !buttonTestActive) {
+    buttonTestActive = true;
+    buttonTestStart = millis();
+    buttonTestPulse = 0;
+  }
+  
+  if (buttonTestActive) {
+    unsigned long buttonElapsed = millis() - buttonTestStart;
+    int currentPulse = (int)(buttonElapsed / 200); // Jeder Pulse dauert 200ms
+    
+    if (currentPulse < 5) {
+      int pulsePhase = (int)(buttonElapsed % 200);
+      if (pulsePhase < 100 && buttonTestPulse != currentPulse) {
+        digitalWrite(VIB_PIN, HIGH);
+        buttonTestPulse = currentPulse;
+      } else if (pulsePhase >= 100) {
+        digitalWrite(VIB_PIN, LOW);
+      }
+    } else {
       digitalWrite(VIB_PIN, LOW);
-      delay(100);
+      buttonTestActive = false;
     }
   }
 
   M5.update();
-  delay(50); // sehr kurzer Delay, damit das System nicht überlastet wird
+  delay(10); // Sehr kurzer Delay für bessere MQTT-Reaktion
 }
