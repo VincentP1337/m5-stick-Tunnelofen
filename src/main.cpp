@@ -6,7 +6,7 @@
 
 const char* ssid = "IIoT-Students";
 const char* password = "b6H948!%^%$9$P";
-const char* mqtt_server = "192.168.150.10";
+const char* mqtt_server = "192.168.150.2";
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -139,12 +139,9 @@ void loop() {
 
     // Geofencing-Status anzeigen
     M5.Display.setTextColor(lastGeofenceStatus == "IN" ? RED : GREEN, BLACK);
-    M5.Display.printf("Geofence: %s\n", lastGeofenceStatus == "IN" ? "GEFAHR!" : "SICHER");    M5.Display.setTextColor(YELLOW, BLACK);
+    M5.Display.printf("Geofence: %s\n", lastGeofenceStatus == "IN" ? "GEFAHR!" : "SICHER");    
+    M5.Display.setTextColor(YELLOW, BLACK);
     M5.Display.printf("Batterie: %d %%\n", batPercent);
-
-    // Debug: Geofence-Status anzeigen
-    M5.Display.setTextColor(ORANGE, BLACK);
-    M5.Display.printf("Debug: %s\n", lastGeofenceStatus.c_str());
 
     lastDisplayTemp = lastTemperature;
     lastBatPercent = batPercent;
