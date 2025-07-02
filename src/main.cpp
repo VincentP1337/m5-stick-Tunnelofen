@@ -6,7 +6,7 @@
 
 const char* ssid = "IIoT-Students";
 const char* password = "b6H948!%^%$9$P";
-const char* mqtt_server = "192.168.150.2";
+const char* mqtt_server = "192.168.150.125";
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
